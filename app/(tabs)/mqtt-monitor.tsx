@@ -1,17 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Dimensions, ScrollView, TouchableOpacity, AppState } from 'react-native';
+import { View, Text, StyleSheet, Dimensions, ScrollView, TouchableOpacity, AppState, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import init from 'react_native_mqtt';
-import { LineChart } from 'react-native-chart-kit';
+import { Ionicons } from '@expo/vector-icons';
 
-// Initialize MQTT client
-init({
-  size: 10000,
-  storageBackend: AsyncStorage,
-  defaultExpires: 1000 * 3600 * 24,
-  enableCache: true,
-  sync: {}
-});
+const TOPIC = 'ESILV';
+const NORMAL_TEMP_MIN = -4;
+const NORMAL_TEMP_MAX = 6;
+const WARNING_TEMP_MAX = 10;
 
 interface TempDataPoint {
   temp: number;
@@ -25,14 +20,48 @@ export default function MqttMonitor() {
   const [temperature, setTemperature] = useState<number | null>(null);
   const [lastUpdateTime, setLastUpdateTime] = useState<string>('Never');
   const [isReady, setIsReady] = useState(false);
-  const [clientId] = useState(`fridge-app-${Math.random().toString(16).slice(2, 10)}`);
-  const TOPIC = 'ESILV'; // Remove trailing slash
   const [tempHistory, setTempHistory] = useState<TempDataPoint[]>([]);
-  const NORMAL_TEMP_MIN = -4;
-  const NORMAL_TEMP_MAX = 6;
-  const WARNING_TEMP_MAX = 10;
+  const [clientId] = useState(`fridge-app-${Math.random().toString(16).slice(2, 10)}`);
+  const [LineChart, setLineChart] = useState<any>(null);
   const appState = useRef(AppState.currentState);
   const mqttRef = useRef<any>(null);
+
+  useEffect(() => {
+    const initializeDependencies = async () => {
+      if (Platform.OS !== 'web') {
+        try {
+          // Ensure AsyncStorage is ready
+          await AsyncStorage.setItem('mqtt_test', 'test');
+          await AsyncStorage.removeItem('mqtt_test');
+
+          // Import and initialize MQTT
+          const mqtt = await import('react_native_mqtt');
+          mqtt.default({
+            size: 10000,
+            storageBackend: AsyncStorage,
+            defaultExpires: 1000 * 3600 * 24,
+            enableCache: true,
+            sync: {},
+            _callback: () => {
+              console.log('Storage is ready');
+            }
+          });
+
+          // Import chart
+          const chartKit = await import('react-native-chart-kit');
+          setLineChart(() => chartKit.LineChart);
+
+          // Initialize MQTT client after storage is ready
+          setupMqttConnection();
+        } catch (error) {
+          console.error('Initialization error:', error);
+          setConnectStatus('Init Failed');
+        }
+      }
+    };
+
+    initializeDependencies();
+  }, []);
 
   const handleReset = () => {
     setTempHistory([]);
@@ -74,11 +103,20 @@ export default function MqttMonitor() {
 
   const setupMqttConnection = () => {
     try {
+      if (Platform.OS === 'web') {
+        console.log('Web platform detected, MQTT not supported');
+        setConnectStatus('Web Not Supported');
+        setIsReady(true);
+        return;
+      }
+
+      // Create new client with unique ID
+      const newClientId = `fridge-app-${Math.random().toString(16).slice(2, 10)}`;
       const mqttClient = new Paho.MQTT.Client(
         'broker.emqx.io',
         8083,
         '/mqtt',
-        clientId
+        newClientId
       );
 
       mqttClient.onConnectionLost = (responseObject: any) => {
@@ -86,19 +124,19 @@ export default function MqttMonitor() {
           console.log('Connection lost:', responseObject.errorMessage);
           setConnectStatus('Connection Lost');
           // Try to reconnect after a delay
-          setTimeout(reconnectMqtt, 5000);
+          setTimeout(() => setupMqttConnection(), 5000);
         }
       };
 
       mqttClient.onMessageArrived = (message: any) => {
-        console.log('Message arrived on topic:', message.destinationName);
+        console.log('Message arrived:', message.payloadString);
         try {
           const data = JSON.parse(message.payloadString);
           if (data.temperature !== undefined) {
             const tempValue = Number(data.temperature);
             if (!isNaN(tempValue)) {
               setTemperature(tempValue);
-              const now = Date.now(); // Use timestamp in milliseconds
+              const now = Date.now();
               const newDataPoint = {
                 temp: tempValue,
                 time: formatTime(now),
@@ -139,8 +177,7 @@ export default function MqttMonitor() {
         onFailure: (err: any) => {
           console.error('MQTT connection failed:', err);
           setConnectStatus('Connection Failed');
-          // Try to reconnect after a delay
-          setTimeout(reconnectMqtt, 5000);
+          setTimeout(() => setupMqttConnection(), 5000);
         },
         useSSL: false,
         timeout: 3,
@@ -178,7 +215,7 @@ export default function MqttMonitor() {
   };
 
   const renderChart = () => {
-    if (tempHistory.length < 2) return null;
+    if (!LineChart || Platform.OS === 'web' || tempHistory.length < 2) return null;
 
     const chartData = {
       labels: tempHistory.map(point => formatTime(point.timestamp)),
@@ -262,20 +299,40 @@ export default function MqttMonitor() {
   };
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView style={[styles.container, Platform.OS === 'web' && styles.webContainer]}>
       <View style={styles.card}>
         <View style={styles.header}>
-          <Text style={styles.title}>MQTT Sensor Monitor</Text>
+          <View style={styles.titleContainer}>
+            <Ionicons 
+              name={Platform.OS === 'web' ? 'thermometer-outline' : 'thermometer'} 
+              size={24} 
+              color="#007AFF" 
+              style={styles.titleIcon}
+            />
+            <Text style={styles.title}>MQTT Sensor Monitor</Text>
+          </View>
           <Text style={[
             styles.connectionStatus,
-            { color: connectStatus === 'Connected' ? '#4CAF50' : '#FF9800' }
+            { 
+              color: Platform.OS === 'web' ? '#666' :
+                     connectStatus === 'Connected' ? '#4CAF50' : 
+                     '#FF9800' 
+            }
           ]}>
-            {connectStatus}
+            {Platform.OS === 'web' ? 'Web Not Supported' : connectStatus}
           </Text>
         </View>
 
         <View style={styles.sensorCard}>
-          <Text style={styles.sensorName}>Fridge Sensor</Text>
+          <View style={styles.sensorHeader}>
+            <Ionicons 
+              name={Platform.OS === 'web' ? 'snow-outline' : 'snow'} 
+              size={20} 
+              color="#007AFF" 
+              style={styles.sensorIcon}
+            />
+            <Text style={styles.sensorName}>Fridge Sensor</Text>
+          </View>
           <Text style={styles.clientId}>Client ID: {clientId}</Text>
           <Text style={styles.topic}>Topic: {TOPIC}</Text>
           <View style={styles.tempDisplay}>
@@ -334,6 +391,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
   },
+  titleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  titleIcon: {
+    marginRight: 8,
+  },
   title: {
     fontSize: 20,
     fontWeight: '600',
@@ -347,10 +411,17 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 16,
   },
+  sensorHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  sensorIcon: {
+    marginRight: 8,
+  },
   sensorName: {
     fontSize: 16,
     fontWeight: '500',
-    marginBottom: 4,
   },
   clientId: {
     fontSize: 12,
@@ -455,5 +526,10 @@ const styles = StyleSheet.create({
   },
   criticalTemp: {
     color: '#FF0000',
+  },
+  webContainer: {
+    maxWidth: 800,
+    marginHorizontal: 'auto',
+    padding: 20,
   },
 }); 
