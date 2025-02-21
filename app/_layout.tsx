@@ -18,6 +18,9 @@ export default function Layout() {
             case '(tabs)/notifications':
               iconName = focused ? 'notifications' : 'notifications-outline';
               break;
+            case '(tabs)/mqtt-monitor':
+              iconName = focused ? 'thermometer' : 'thermometer-outline';
+              break;
             default:
               iconName = 'help-outline';
           }
@@ -46,6 +49,12 @@ export default function Layout() {
           title: 'Notifications',
         }}
       />
+      <Tabs.Screen
+        name="(tabs)/mqtt-monitor"
+        options={{
+          title: 'MQTT Monitor',
+        }}
+      />
     </Tabs>
   );
-}
+} 
